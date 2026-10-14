@@ -1,0 +1,6 @@
+{
+  "name": "DocStudio",
+  "description": "Professional three-column document editor for creating, formatting, managing, and live-previewing publication-ready documents.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
