@@ -198,6 +198,8 @@
     page-break-after: always;
     box-shadow: none !important;
     margin: 0 auto !important;
+    box-sizing: border-box !important;
+    overflow: hidden !important;
   }
   @page {
     margin: 0;

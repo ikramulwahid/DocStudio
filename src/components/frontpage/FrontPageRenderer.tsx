@@ -66,6 +66,7 @@ export const FrontPageRenderer: React.FC<FrontPageRendererProps> = ({
         width: `${width}px`,
         minHeight: `${height}px`,
         height: `${height}px`,
+        boxSizing: 'border-box',
       }}
       className="relative bg-white shadow-xl flex flex-col overflow-hidden text-slate-800 select-none print:shadow-none print:m-0"
     >

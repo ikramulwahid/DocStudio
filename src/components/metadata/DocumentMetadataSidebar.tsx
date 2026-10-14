@@ -651,10 +651,10 @@ export const DocumentMetadataSidebar: React.FC<DocumentMetadataSidebarProps> = (
                   onChange={(e) => onSettingsChange({ margins: e.target.value as PageMargin })}
                   className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-md focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none text-slate-900 bg-white"
                 >
-                  <option value="normal">Normal (25.4mm / 1.0 in)</option>
-                  <option value="narrow">Narrow (12.7mm / 0.5 in)</option>
-                  <option value="wide">Wide (38.1mm / 1.5 in)</option>
-                  <option value="compact">Compact (18.0mm)</option>
+                  <option value="normal">Normal — 25.4 mm (1.00 in)</option>
+                  <option value="narrow">Narrow — 12.7 mm (0.50 in)</option>
+                  <option value="wide">Wide — 38.1 mm (1.50 in)</option>
+                  <option value="compact">Compact — 18.0 mm (0.71 in)</option>
                 </select>
               </div>
 

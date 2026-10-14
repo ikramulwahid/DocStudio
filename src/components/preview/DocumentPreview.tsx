@@ -1,33 +1,17 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { PreviewToolbar } from './PreviewToolbar';
-import { DocumentData, PageMargin, PageSize, PageOrientation, DocumentBlock, SectionBreakBlock } from '../../types/document';
+import { DocumentData } from '../../types/document';
 import { BlockPreviewRenderer } from './BlockPreviewRenderer';
 import { FrontPageRenderer } from '../frontpage/FrontPageRenderer';
 import { calculateHeadingNumbers } from '../../services/blockUtils';
 import { printDocumentAsPdf } from '../../services/exportService';
+import { getPageGeometry } from '../../services/pageGeometry';
+import { paginateDocument, PaginatedPage } from '../../services/paginationService';
+import { AlertCircle } from 'lucide-react';
 
 interface DocumentPreviewProps {
   docData: DocumentData;
   previewRef: React.RefObject<HTMLDivElement | null>;
-}
-
-interface PaginatedPage {
-  pageNumber: number; // 1-based sequential page index in body
-  blocks: DocumentBlock[];
-  displayPageNumber: number; // displayed page number (supports section restart)
-  headerSettings: {
-    showHeader: boolean;
-    headerLeft: string;
-    headerCenter?: string;
-    headerRight: string;
-  };
-  footerSettings: {
-    showFooter: boolean;
-    footerLeft?: string;
-    footerCenter?: string;
-    footerRight?: string;
-    footerText: string;
-  };
 }
 
 export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
@@ -39,133 +23,36 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
   const [showGuides, setShowGuides] = useState<boolean>(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Compute paper dimensions in pixels (at 96 DPI)
-  const getPageDimensions = (size: PageSize, orientation: PageOrientation) => {
-    let width = 794; // A4 portrait default (210mm)
-    let height = 1123; // A4 portrait default (297mm)
-
-    if (size === 'letter') {
-      width = 816; // 8.5in
-      height = 1056; // 11in
-    } else if (size === 'legal') {
-      width = 816; // 8.5in
-      height = 1344; // 14in
-    }
-
-    if (orientation === 'landscape') {
-      const temp = width;
-      width = height;
-      height = temp;
-    }
-
-    return { width, height };
-  };
-
-  const { width: pageWidth, height: pageHeight } = getPageDimensions(
+  // Authoritative physical page geometry
+  const geometry = useMemo(() => {
+    return getPageGeometry(
+      docData.settings.pageSize,
+      docData.settings.orientation,
+      docData.settings.margins,
+      docData.settings.showHeader,
+      docData.settings.showFooter
+    );
+  }, [
     docData.settings.pageSize,
-    docData.settings.orientation
-  );
+    docData.settings.orientation,
+    docData.settings.margins,
+    docData.settings.showHeader,
+    docData.settings.showFooter,
+  ]);
 
-  const getMarginPadding = (margins: PageMargin): { top: number; right: number; bottom: number; left: number } => {
-    switch (margins) {
-      case 'narrow':
-        return { top: 48, right: 48, bottom: 48, left: 48 };
-      case 'wide':
-        return { top: 110, right: 110, bottom: 110, left: 110 };
-      case 'compact':
-        return { top: 60, right: 60, bottom: 60, left: 60 };
-      case 'normal':
-      default:
-        return { top: 80, right: 80, bottom: 80, left: 80 };
-    }
-  };
-
-  const marginPadding = getMarginPadding(docData.settings.margins);
+  const { pagePx, marginsPx } = geometry;
+  const pageWidth = pagePx.width;
+  const pageHeight = pagePx.height;
 
   // Dynamically calculate hierarchical heading numbers
   const headingNumbers = useMemo(() => {
     return calculateHeadingNumbers(docData.blocks || [], docData.settings.headingNumberingScheme || '1.1');
   }, [docData.blocks, docData.settings.headingNumberingScheme]);
 
-  // Divide blocks into physical pages respecting explicit page breaks and section breaks
+  // Divide blocks into physical pages with authoritative automatic pagination and explicit breaks
   const pages = useMemo<PaginatedPage[]>(() => {
-    const pagesList: PaginatedPage[] = [];
-    let currentPageBlocks: DocumentBlock[] = [];
-
-    // Current active running settings (can be modified by sectionbreak)
-    let currentHeader = {
-      showHeader: docData.settings.showHeader,
-      headerLeft: docData.settings.headerLeft || docData.metadata.organization || docData.metadata.title,
-      headerCenter: docData.settings.headerCenter || '',
-      headerRight: docData.settings.headerRight || docData.metadata.referenceId,
-    };
-
-    let currentFooter = {
-      showFooter: docData.settings.showFooter,
-      footerLeft: docData.settings.footerLeft || '',
-      footerCenter: docData.settings.footerCenter || '',
-      footerRight: docData.settings.footerRight || '',
-      footerText: docData.settings.footerText || '',
-    };
-
-    let currentDisplayPage = 1;
-    let pageCounter = 1;
-
-    const commitPage = () => {
-      pagesList.push({
-        pageNumber: pageCounter++,
-        blocks: currentPageBlocks,
-        displayPageNumber: currentDisplayPage++,
-        headerSettings: { ...currentHeader },
-        footerSettings: { ...currentFooter },
-      });
-      currentPageBlocks = [];
-    };
-
-    (docData.blocks || []).forEach((block) => {
-      if (block.type === 'pagebreak') {
-        if (currentPageBlocks.length > 0) {
-          commitPage();
-        }
-      } else if (block.type === 'sectionbreak') {
-        // Commit current page before section break
-        if (currentPageBlocks.length > 0) {
-          commitPage();
-        }
-        const sb = block as SectionBreakBlock;
-        // If not inheriting, override local header and footer
-        if (!sb.inheritHeader && sb.localHeader) {
-          currentHeader = {
-            showHeader: docData.settings.showHeader,
-            headerLeft: sb.localHeader.headerLeft || '',
-            headerCenter: sb.localHeader.headerCenter || '',
-            headerRight: sb.localHeader.headerRight || '',
-          };
-        }
-        if (!sb.inheritFooter && sb.localFooter) {
-          currentFooter = {
-            showFooter: docData.settings.showFooter,
-            footerLeft: sb.localFooter.footerLeft || '',
-            footerCenter: sb.localFooter.footerCenter || '',
-            footerRight: sb.localFooter.footerRight || '',
-            footerText: sb.localFooter.footerText || '',
-          };
-        }
-        // If restart page numbering
-        if (sb.pageNumberingMode === 'restart') {
-          currentDisplayPage = sb.pageNumberRestartValue || 1;
-        }
-      } else {
-        currentPageBlocks.push(block);
-      }
-    });
-
-    if (currentPageBlocks.length > 0 || pagesList.length === 0) {
-      commitPage();
-    }
-
-    return pagesList;
-  }, [docData.blocks, docData.settings, docData.metadata]);
+    return paginateDocument(docData, geometry);
+  }, [docData, geometry]);
 
   const totalPages = pages.length;
   const hasCoverPage = Boolean(docData.settings.frontPage?.enabled);
@@ -295,16 +182,18 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
                 style={{
                   width: `${pageWidth}px`,
                   minHeight: `${pageHeight}px`,
+                  height: `${pageHeight}px`, // Fixed exact physical page height
                   backgroundColor: '#FFFFFF',
-                  paddingTop: `${marginPadding.top}px`,
-                  paddingBottom: `${marginPadding.bottom}px`,
-                  paddingLeft: `${marginPadding.left}px`,
-                  paddingRight: `${marginPadding.right}px`,
+                  paddingTop: `${marginsPx.top}px`,
+                  paddingBottom: `${marginsPx.bottom}px`,
+                  paddingLeft: `${marginsPx.left}px`,
+                  paddingRight: `${marginsPx.right}px`,
+                  boxSizing: 'border-box',
                   fontFamily: docData.settings.fontFamily,
                   fontSize: docData.settings.fontSize === '10pt' ? '13px' : docData.settings.fontSize === '11pt' ? '14.5px' : docData.settings.fontSize === '12pt' ? '16px' : '17.5px',
                   lineHeight: docData.settings.lineHeight,
                 }}
-                className={`relative bg-white shadow-xl flex flex-col justify-between text-slate-800 transition-all ${
+                className={`relative bg-white shadow-xl flex flex-col justify-between text-slate-800 transition-all overflow-hidden ${
                   showGuides ? 'ring-1 ring-blue-300 ring-dashed' : ''
                 }`}
               >
@@ -313,12 +202,20 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
                   <div
                     className="absolute inset-0 pointer-events-none border border-dashed border-blue-400/40"
                     style={{
-                      top: `${marginPadding.top}px`,
-                      bottom: `${marginPadding.bottom}px`,
-                      left: `${marginPadding.left}px`,
-                      right: `${marginPadding.right}px`,
+                      top: `${marginsPx.top}px`,
+                      bottom: `${marginsPx.bottom}px`,
+                      left: `${marginsPx.left}px`,
+                      right: `${marginsPx.right}px`,
                     }}
                   />
+                )}
+
+                {/* Page Content Overflow Warning Pill if overflowing */}
+                {page.isOverflowing && (
+                  <div className="absolute top-2 right-2 z-20 flex items-center gap-1.5 px-2.5 py-1 bg-amber-500/90 text-white text-[10px] font-semibold rounded shadow-sm print:hidden">
+                    <AlertCircle className="w-3 h-3" />
+                    <span>Content exceeds page boundary</span>
+                  </div>
                 )}
 
                 {/* Diagonal Watermark */}

@@ -4,6 +4,8 @@ import { toPng } from 'html-to-image';
 import { DocumentData, DocumentBlock, HeadingBlock, ParagraphBlock, ListBlock, TableBlock, FormulaBlock, SignatureBlock, MetadataBlock } from '../types/document';
 import { calculateHeadingNumbers } from './blockUtils';
 
+import { getPageGeometry } from './pageGeometry';
+
 /**
  * Downloads a Blob directly to the client's device with filename
  */
@@ -69,17 +71,25 @@ async function capturePageNode(node: HTMLElement): Promise<string> {
  * Exports directly to a downloadable PDF file via canvas snapshot
  */
 export async function exportToDirectPdf(element: HTMLElement, docData: DocumentData): Promise<void> {
-  const isA4 = docData.settings.pageSize === 'a4';
+  const geometry = getPageGeometry(
+    docData.settings.pageSize,
+    docData.settings.orientation,
+    docData.settings.margins,
+    docData.settings.showHeader,
+    docData.settings.showFooter
+  );
+
   const orientation = docData.settings.orientation === 'landscape' ? 'landscape' : 'portrait';
 
+  // Use authoritative page dimensions in millimeters
   const pdf = new jsPDF({
     orientation,
     unit: 'mm',
-    format: isA4 ? 'a4' : 'letter',
+    format: [geometry.pageMm.width, geometry.pageMm.height],
   });
 
-  const pdfWidth = pdf.internal.pageSize.getWidth();
-  const pdfHeight = pdf.internal.pageSize.getHeight();
+  const pdfWidth = geometry.pageMm.width;
+  const pdfHeight = geometry.pageMm.height;
 
   // Find individual pages inside the preview container
   const pageElements: HTMLElement[] = [];
@@ -108,7 +118,7 @@ export async function exportToDirectPdf(element: HTMLElement, docData: DocumentD
       const pageNode = pageElements[i];
       const imgData = await capturePageNode(pageNode);
       if (i > 0) {
-        pdf.addPage();
+        pdf.addPage([pdfWidth, pdfHeight], orientation);
       }
       pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight, undefined, 'FAST');
     }
