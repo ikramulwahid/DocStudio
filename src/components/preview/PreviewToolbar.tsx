@@ -2,15 +2,14 @@ import React from 'react';
 import { 
   ZoomIn, 
   ZoomOut, 
-  Maximize2, 
   Grid, 
   ChevronLeft, 
   ChevronRight, 
   Printer, 
-  RotateCcw,
   Eye,
-  FileCheck
+  AlertTriangle
 } from 'lucide-react';
+import { DocumentOverflowSummary } from '../../services/paginationService';
 
 interface PreviewToolbarProps {
   zoom: number;
@@ -18,6 +17,8 @@ interface PreviewToolbarProps {
   totalPages: number;
   hasCoverPage?: boolean;
   showGuides: boolean;
+  overflowSummary?: DocumentOverflowSummary;
+  onJumpToPage?: (pageNum: number) => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onResetZoom: () => void;
@@ -35,6 +36,8 @@ export const PreviewToolbar: React.FC<PreviewToolbarProps> = ({
   totalPages,
   hasCoverPage = false,
   showGuides,
+  overflowSummary,
+  onJumpToPage,
   onZoomIn,
   onZoomOut,
   onResetZoom,
@@ -86,6 +89,24 @@ export const PreviewToolbar: React.FC<PreviewToolbarProps> = ({
             <ChevronRight className="w-3 h-3" />
           </button>
         </div>
+
+        {/* Overflow diagnostic indicator badge */}
+        {overflowSummary?.hasOverflow && (
+          <>
+            <span className="text-slate-300">|</span>
+            <button
+              type="button"
+              onClick={() => onJumpToPage && onJumpToPage(overflowSummary.overflowingPages[0])}
+              className="flex items-center gap-1 px-2 py-0.5 bg-amber-100 hover:bg-amber-200 text-amber-800 rounded text-[11px] font-medium transition-colors cursor-pointer"
+              title={overflowSummary.message}
+            >
+              <AlertTriangle className="w-3 h-3 text-amber-600" />
+              <span>
+                {overflowSummary.totalOverflowingPages} {overflowSummary.totalOverflowingPages === 1 ? 'Page' : 'Pages'} Exceeds Bounds
+              </span>
+            </button>
+          </>
+        )}
       </div>
 
       {/* Right side: Zoom, Fit, Guides, Quick Print */}

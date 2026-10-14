@@ -50,8 +50,11 @@ async function capturePageNode(node: HTMLElement): Promise<string> {
     },
     filter: (domNode: Node) => {
       if (domNode instanceof HTMLElement) {
-        // Skip interactive guide overlays (margin dashed lines)
+        // Skip interactive guide overlays (margin dashed lines) and print:hidden badges
         if (domNode.classList.contains('border-dashed') && domNode.classList.contains('pointer-events-none')) {
+          return false;
+        }
+        if (domNode.classList.contains('print:hidden')) {
           return false;
         }
       }
@@ -76,7 +79,8 @@ export async function exportToDirectPdf(element: HTMLElement, docData: DocumentD
     docData.settings.orientation,
     docData.settings.margins,
     docData.settings.showHeader,
-    docData.settings.showFooter
+    docData.settings.showFooter,
+    docData.settings.pageNumbering
   );
 
   const orientation = docData.settings.orientation === 'landscape' ? 'landscape' : 'portrait';

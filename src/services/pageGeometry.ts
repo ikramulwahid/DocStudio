@@ -1,4 +1,4 @@
-import { PageSize, PageOrientation, PageMargin } from '../types/document';
+import { PageSize, PageOrientation, PageMargin, PageNumberingFormat } from '../types/document';
 
 /**
  * Physical Page Geometry Standard Definitions
@@ -43,6 +43,26 @@ export interface UsableContentArea {
   bottom: number;
   right: number;
 }
+
+/**
+ * Shared layout contract for running header and footer.
+ * Shared directly across geometry calculation, preview rendering, and print styles.
+ */
+export const HEADER_LAYOUT = {
+  contentHeightPx: 16,
+  paddingBottomPx: 12, // pb-3
+  borderBottomPx: 1,    // border-b
+  marginBottomPx: 24,   // mb-6
+  totalHeightPx: 53,    // 16 + 12 + 1 + 24
+};
+
+export const FOOTER_LAYOUT = {
+  contentHeightPx: 16,
+  paddingTopPx: 12,     // pt-3
+  borderTopPx: 1,       // border-t
+  marginTopPx: 24,      // mt-6
+  totalHeightPx: 53,    // 16 + 12 + 1 + 24
+};
 
 export interface PageGeometry {
   pageSize: PageSize;
@@ -117,7 +137,8 @@ export function getPageGeometry(
   orientation: PageOrientation,
   margins: PageMargin,
   showHeader: boolean = true,
-  showFooter: boolean = true
+  showFooter: boolean = true,
+  pageNumbering: PageNumberingFormat = 'Page X of Y'
 ): PageGeometry {
   const basePaper = PAPER_SIZES_MM[pageSize] || PAPER_SIZES_MM.a4;
   
@@ -166,18 +187,19 @@ export function getPageGeometry(
     right: marginsPx.right,
   };
 
-  // Running header and footer vertical footprint
-  // Header: ~28px height + 16px bottom margin = 44px
-  // Footer: ~28px height + 16px top margin = 44px
-  const headerHeightPx = showHeader ? 28 : 0;
-  const headerMarginBottomPx = showHeader ? 16 : 0;
-  const footerHeightPx = showFooter ? 28 : 0;
-  const footerMarginTopPx = showFooter ? 16 : 0;
+  // Running header footprint:
+  // If showHeader is true, reserve HEADER_LAYOUT.totalHeightPx
+  // If false, no space is reserved and no element is rendered.
+  const headerHeightPx = showHeader ? HEADER_LAYOUT.totalHeightPx : 0;
+  const headerMarginBottomPx = showHeader ? HEADER_LAYOUT.marginBottomPx : 0;
 
-  const totalHeaderFootprint = headerHeightPx + headerMarginBottomPx;
-  const totalFooterFootprint = footerHeightPx + footerMarginTopPx;
+  // Running footer footprint:
+  // The footer container is rendered if showFooter is true OR if pageNumbering is enabled (not 'none')
+  const hasFooter = showFooter || (pageNumbering && pageNumbering !== 'none');
+  const footerHeightPx = hasFooter ? FOOTER_LAYOUT.totalHeightPx : 0;
+  const footerMarginTopPx = hasFooter ? FOOTER_LAYOUT.marginTopPx : 0;
 
-  const usableBodyHeightPx = Math.max(100, contentPx.height - totalHeaderFootprint - totalFooterFootprint);
+  const usableBodyHeightPx = Math.max(100, contentPx.height - headerHeightPx - footerHeightPx);
 
   return {
     pageSize,

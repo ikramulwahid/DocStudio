@@ -199,10 +199,13 @@
     box-shadow: none !important;
     margin: 0 auto !important;
     box-sizing: border-box !important;
-    overflow: hidden !important;
+    overflow: visible !important;
+  }
+  #print-target > :last-child {
+    break-after: auto !important;
+    page-break-after: auto !important;
   }
   @page {
     margin: 0;
-    size: auto;
   }
 }

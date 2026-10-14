@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
-import { X, FileDown, Printer, FileText, Code, FileSpreadsheet, Check, Download } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import { X, FileDown, Printer, FileText, Code, FileSpreadsheet, Check, Download, AlertTriangle } from 'lucide-react';
 import { DocumentData } from '../../types/document';
 import { printDocumentAsPdf, exportToDirectPdf, exportToDocx, exportToHtml, exportToMarkdown, exportToJson } from '../../services/exportService';
+import { getPageGeometry } from '../../services/pageGeometry';
+import { paginateDocument, getDocumentOverflowSummary } from '../../services/paginationService';
 
 interface ExportModalProps {
   isOpen: boolean;
@@ -21,6 +23,21 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const [selectedFormat, setSelectedFormat] = useState<'pdf-print' | 'pdf-direct' | 'docx' | 'html' | 'md' | 'json'>('pdf-print');
   const [isExporting, setIsExporting] = useState(false);
 
+  // Calculate overflow status to safeguard user from silent layout overflows
+  const overflowSummary = useMemo(() => {
+    if (!isOpen) return { hasOverflow: false, overflowingPages: [], message: '', totalOverflowingPages: 0, oversizedBlockCount: 0, maxOverflowPx: 0 };
+    const geometry = getPageGeometry(
+      docData.settings.pageSize,
+      docData.settings.orientation,
+      docData.settings.margins,
+      docData.settings.showHeader,
+      docData.settings.showFooter,
+      docData.settings.pageNumbering
+    );
+    const pages = paginateDocument(docData, geometry);
+    return getDocumentOverflowSummary(pages);
+  }, [isOpen, docData]);
+
   if (!isOpen) return null;
 
   const handleExport = async () => {
@@ -28,13 +45,21 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     try {
       if (selectedFormat === 'pdf-print') {
         printDocumentAsPdf();
-        onNotify('success', 'Print / PDF Dialog Launched', 'Save as PDF using your browser dialog.');
+        if (overflowSummary.hasOverflow) {
+          onNotify('info', 'Print / PDF Launched (Overflow Warning)', overflowSummary.message);
+        } else {
+          onNotify('success', 'Print / PDF Dialog Launched', 'Save as PDF using your browser dialog.');
+        }
       } else if (selectedFormat === 'pdf-direct') {
         if (!previewElement) {
           throw new Error('Preview element not accessible for rendering');
         }
         await exportToDirectPdf(previewElement, docData);
-        onNotify('success', 'PDF Downloaded', `${docData.metadata.title}.pdf was downloaded.`);
+        if (overflowSummary.hasOverflow) {
+          onNotify('info', 'PDF Downloaded (With Overflow Notice)', `Document downloaded. ${overflowSummary.message}`);
+        } else {
+          onNotify('success', 'PDF Downloaded', `${docData.metadata.title}.pdf was downloaded.`);
+        }
       } else if (selectedFormat === 'docx') {
         await exportToDocx(docData);
         onNotify('success', 'Word DOCX Downloaded', `${docData.metadata.title}.docx was saved.`);
@@ -118,6 +143,17 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           </button>
         </div>
 
+        {/* Overflow Alert Banner if document exceeds page boundary */}
+        {overflowSummary.hasOverflow && (
+          <div className="mx-5 mt-4 p-3.5 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 text-xs flex items-start gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <div>
+              <strong className="font-semibold">Layout Overflow Detected:</strong>{' '}
+              {overflowSummary.message}
+            </div>
+          </div>
+        )}
+
         <div className="p-5 grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-[60vh] overflow-y-auto">
           {formats.map((fmt) => {
             const isSelected = selectedFormat === fmt.id;
@@ -161,11 +197,11 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           </button>
           <button
             type="button"
-            disabled={isExporting}
             onClick={handleExport}
-            className="px-4 py-2 text-xs font-medium rounded-lg text-white bg-blue-600 hover:bg-blue-700 transition-colors shadow-xs flex items-center gap-1.5 disabled:opacity-50"
+            disabled={isExporting}
+            className="px-5 py-2 text-xs font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-1.5 shadow-sm"
           >
-            {isExporting ? 'Exporting...' : 'Export Document'}
+            {isExporting ? 'Exporting...' : 'Export Now'}
           </button>
         </div>
       </div>

@@ -5,9 +5,9 @@ import { BlockPreviewRenderer } from './BlockPreviewRenderer';
 import { FrontPageRenderer } from '../frontpage/FrontPageRenderer';
 import { calculateHeadingNumbers } from '../../services/blockUtils';
 import { printDocumentAsPdf } from '../../services/exportService';
-import { getPageGeometry } from '../../services/pageGeometry';
-import { paginateDocument, PaginatedPage } from '../../services/paginationService';
-import { AlertCircle } from 'lucide-react';
+import { getPageGeometry, HEADER_LAYOUT, FOOTER_LAYOUT } from '../../services/pageGeometry';
+import { paginateDocument, getDocumentOverflowSummary, PaginatedPage } from '../../services/paginationService';
+import { AlertCircle, AlertTriangle } from 'lucide-react';
 
 interface DocumentPreviewProps {
   docData: DocumentData;
@@ -30,7 +30,8 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
       docData.settings.orientation,
       docData.settings.margins,
       docData.settings.showHeader,
-      docData.settings.showFooter
+      docData.settings.showFooter,
+      docData.settings.pageNumbering
     );
   }, [
     docData.settings.pageSize,
@@ -38,6 +39,7 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
     docData.settings.margins,
     docData.settings.showHeader,
     docData.settings.showFooter,
+    docData.settings.pageNumbering,
   ]);
 
   const { pagePx, marginsPx } = geometry;
@@ -56,6 +58,7 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
 
   const totalPages = pages.length;
   const hasCoverPage = Boolean(docData.settings.frontPage?.enabled);
+  const overflowSummary = useMemo(() => getDocumentOverflowSummary(pages), [pages]);
 
   // If cover is toggled off while on cover, switch to page 1
   useEffect(() => {
@@ -115,6 +118,16 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
 
   return (
     <div className="h-full flex flex-col bg-[#E9EDF2] overflow-hidden select-none">
+      {/* Dynamic @page CSS rule to align browser print paper size and orientation */}
+      <style>{`
+        @media print {
+          @page {
+            size: ${geometry.pageMm.width}mm ${geometry.pageMm.height}mm;
+            margin: 0;
+          }
+        }
+      `}</style>
+
       {/* Top Preview Toolbar */}
       <PreviewToolbar
         zoom={zoom}
@@ -122,6 +135,8 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
         totalPages={totalPages}
         hasCoverPage={hasCoverPage}
         showGuides={showGuides}
+        overflowSummary={overflowSummary}
+        onJumpToPage={scrollToPage}
         onZoomIn={() => setZoom((prev) => Math.min(200, prev + 10))}
         onZoomOut={() => setZoom((prev) => Math.max(35, prev - 10))}
         onResetZoom={() => setZoom(100)}
@@ -174,6 +189,7 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
           {pages.map((page) => {
             const pageNum = page.pageNumber;
             const isFirstBodyPage = pageNum === 1;
+            const hasFooter = page.footerSettings.showFooter || (docData.settings.pageNumbering && docData.settings.pageNumbering !== 'none');
 
             return (
               <div
@@ -182,7 +198,8 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
                 style={{
                   width: `${pageWidth}px`,
                   minHeight: `${pageHeight}px`,
-                  height: `${pageHeight}px`, // Fixed exact physical page height
+                  // To prevent silent content clipping, overflowing pages expand naturally while indicating overflow boundary
+                  height: page.isOverflowing ? 'auto' : `${pageHeight}px`,
                   backgroundColor: '#FFFFFF',
                   paddingTop: `${marginsPx.top}px`,
                   paddingBottom: `${marginsPx.bottom}px`,
@@ -193,9 +210,9 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
                   fontSize: docData.settings.fontSize === '10pt' ? '13px' : docData.settings.fontSize === '11pt' ? '14.5px' : docData.settings.fontSize === '12pt' ? '16px' : '17.5px',
                   lineHeight: docData.settings.lineHeight,
                 }}
-                className={`relative bg-white shadow-xl flex flex-col justify-between text-slate-800 transition-all overflow-hidden ${
-                  showGuides ? 'ring-1 ring-blue-300 ring-dashed' : ''
-                }`}
+                className={`relative bg-white shadow-xl flex flex-col justify-between text-slate-800 transition-all ${
+                  page.isOverflowing ? 'overflow-visible ring-2 ring-amber-400' : 'overflow-hidden'
+                } ${showGuides ? 'ring-1 ring-blue-300 ring-dashed' : ''}`}
               >
                 {/* Margin Guide Outlines if enabled */}
                 {showGuides && (
@@ -212,9 +229,9 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
 
                 {/* Page Content Overflow Warning Pill if overflowing */}
                 {page.isOverflowing && (
-                  <div className="absolute top-2 right-2 z-20 flex items-center gap-1.5 px-2.5 py-1 bg-amber-500/90 text-white text-[10px] font-semibold rounded shadow-sm print:hidden">
-                    <AlertCircle className="w-3 h-3" />
-                    <span>Content exceeds page boundary</span>
+                  <div className="absolute top-2 right-2 z-20 flex items-center gap-1.5 px-2.5 py-1 bg-amber-500 text-white text-[10px] font-semibold rounded shadow-sm print:hidden">
+                    <AlertTriangle className="w-3 h-3" />
+                    <span>Page {pageNum} exceeds boundary (~{page.overflowAmountPx}px overflow)</span>
                   </div>
                 )}
 
@@ -227,9 +244,16 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
                   </div>
                 )}
 
-                {/* Running Header */}
+                {/* Running Header: Exact height layout contract */}
                 {page.headerSettings.showHeader ? (
-                  <div className="flex items-center justify-between text-[11px] text-slate-400 pb-3 border-b border-slate-200 mb-6 shrink-0">
+                  <div
+                    style={{
+                      minHeight: `${HEADER_LAYOUT.contentHeightPx}px`,
+                      paddingBottom: `${HEADER_LAYOUT.paddingBottomPx}px`,
+                      marginBottom: `${HEADER_LAYOUT.marginBottomPx}px`,
+                    }}
+                    className="flex items-center justify-between text-[11px] text-slate-400 border-b border-slate-200 shrink-0"
+                  >
                     <div className="font-medium tracking-tight truncate max-w-xs">
                       {resolveToken(page.headerSettings.headerLeft || docData.metadata.organization || docData.metadata.title, page.displayPageNumber, totalPages)}
                     </div>
@@ -242,15 +266,13 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
                       {resolveToken(page.headerSettings.headerRight || docData.metadata.referenceId, page.displayPageNumber, totalPages)}
                     </div>
                   </div>
-                ) : (
-                  <div className="h-2" />
-                )}
+                ) : null}
 
                 {/* Page Content Body */}
                 <div className="flex-1 flex flex-col">
                   {/* First Page Title Banner: Shown on Page 1 if banner enabled AND front page is not enabled */}
                   {isFirstBodyPage && docData.settings.showTitleBanner && !hasCoverPage && (
-                    <div className="mb-6 pb-5 border-b-2 border-slate-900">
+                    <div className="mb-6 pb-5 border-b-2 border-slate-900 shrink-0">
                       <div className="flex items-start justify-between gap-4 mb-2">
                         <div className="min-w-0">
                           <h1 className="text-2xl font-bold text-slate-900 tracking-tight leading-tight">
@@ -304,19 +326,40 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
                       />
                     ))}
                   </div>
+
+                  {/* Explicit Physical Boundary Line & Safe Interim Diagnostic Note when overflowing */}
+                  {page.isOverflowing && (
+                    <div className="mt-6 pt-3 border-t-2 border-dashed border-amber-400 print:border-amber-600">
+                      <div className="p-3 bg-amber-50/90 border border-amber-200 rounded text-amber-900 text-xs flex items-start gap-2 print:border-amber-400">
+                        <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                        <div>
+                          <span className="font-semibold">Page Overflow Limitation:</span> Content exceeds standard printable height by ~{page.overflowAmountPx}px ({page.estimatedHeightPx}px vs {page.maxContentHeightPx}px capacity). Original content is preserved completely without silent truncation. Automatic block splitting is planned for Stage 2.
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
-                {/* Running Footer */}
-                <div className="flex items-center justify-between text-[11px] text-slate-400 pt-3 border-t border-slate-200 mt-6 shrink-0">
-                  <div className="truncate max-w-xs text-slate-500">
-                    {page.footerSettings.showFooter
-                      ? resolveToken(page.footerSettings.footerText || page.footerSettings.footerLeft || '', page.displayPageNumber, totalPages)
-                      : ''}
+                {/* Running Footer: Exact height layout contract */}
+                {hasFooter ? (
+                  <div
+                    style={{
+                      minHeight: `${FOOTER_LAYOUT.contentHeightPx}px`,
+                      paddingTop: `${FOOTER_LAYOUT.paddingTopPx}px`,
+                      marginTop: `${FOOTER_LAYOUT.marginTopPx}px`,
+                    }}
+                    className="flex items-center justify-between text-[11px] text-slate-400 border-t border-slate-200 shrink-0"
+                  >
+                    <div className="truncate max-w-xs text-slate-500">
+                      {page.footerSettings.showFooter
+                        ? resolveToken(page.footerSettings.footerText || page.footerSettings.footerLeft || '', page.displayPageNumber, totalPages)
+                        : ''}
+                    </div>
+                    <div className="font-mono text-[10px] text-slate-600 font-medium">
+                      {formatPageNumber(page.displayPageNumber, totalPages)}
+                    </div>
                   </div>
-                  <div className="font-mono text-[10px] text-slate-600 font-medium">
-                    {formatPageNumber(page.displayPageNumber, totalPages)}
-                  </div>
-                </div>
+                ) : null}
               </div>
             );
           })}

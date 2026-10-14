@@ -1,5 +1,5 @@
 import { DocumentBlock, DocumentData, HeadingBlock, ParagraphBlock, ListBlock, TableBlock, FormulaBlock, DividerBlock, SignatureBlock, CalloutBlock, ImageBlock, MetadataBlock, SectionBreakBlock } from '../types/document';
-import { PageGeometry } from './pageGeometry';
+import { PageGeometry, HEADER_LAYOUT, FOOTER_LAYOUT } from './pageGeometry';
 
 export interface PaginatedPage {
   pageNumber: number; // 1-based sequential page index in body
@@ -8,6 +8,9 @@ export interface PaginatedPage {
   estimatedHeightPx: number;
   maxContentHeightPx: number;
   isOverflowing: boolean;
+  hasOversizedBlock: boolean; // whether a single block exceeds the full page capacity
+  oversizedBlockIds: string[]; // ids of blocks exceeding full page capacity
+  overflowAmountPx: number;
   headerSettings: {
     showHeader: boolean;
     headerLeft: string;
@@ -21,6 +24,53 @@ export interface PaginatedPage {
     footerRight?: string;
     footerText: string;
   };
+}
+
+export interface DocumentOverflowSummary {
+  hasOverflow: boolean;
+  totalOverflowingPages: number;
+  overflowingPages: number[];
+  oversizedBlockCount: number;
+  maxOverflowPx: number;
+  message: string;
+}
+
+/**
+ * Calculates accurate vertical height in CSS pixels of Page 1 Title Banner
+ * accounting for title length, subtitle, status tag, and metadata row wrap.
+ */
+export function calculateTitleBannerHeight(
+  docData: DocumentData,
+  contentWidthPx: number
+): number {
+  // Base spacing: padding-bottom 20px (pb-5), border 2px (border-b-2), margin-bottom 24px (mb-6)
+  const baseFrameSpacing = 46;
+
+  // Title: 24px font size (text-2xl), line-height ~30px (leading-tight)
+  const titleText = docData.metadata.title || 'Untitled Document';
+  const titleCharsPerLine = Math.max(15, Math.floor(contentWidthPx / (24 * 0.55)));
+  const titleLines = Math.max(1, Math.ceil(titleText.length / titleCharsPerLine));
+  const titleHeight = titleLines * 30;
+
+  // Subtitle: ~24px if present
+  const subtitleHeight = docData.metadata.subtitle ? 24 : 0;
+
+  // Gap between title block and metadata row (mb-2 = 8px)
+  const gap = 8;
+
+  // Metadata bar: pt-2 (8px), border-t (1px), content ~18px
+  // Measure whether metadata fields wrap onto multiple lines
+  let metaItemCount = 1; // date is always present
+  if (docData.metadata.author) metaItemCount++;
+  if (docData.metadata.organization) metaItemCount++;
+  if (docData.metadata.referenceId) metaItemCount++;
+
+  // Approximate width per meta item is ~130px
+  const itemsPerRow = Math.max(1, Math.floor(contentWidthPx / 130));
+  const metaRows = Math.ceil(metaItemCount / itemsPerRow);
+  const metaBarHeight = 9 + (metaRows * 18);
+
+  return Math.round(baseFrameSpacing + titleHeight + subtitleHeight + gap + metaBarHeight);
 }
 
 /**
@@ -45,11 +95,10 @@ export function estimateBlockHeight(
   const linePx = fontSizePx * lh;
 
   // Characters per line estimate based on content width and font size
-  // On average, a proportional font character is ~0.55 * fontSize
   const avgCharWidth = fontSizePx * 0.52;
   const charsPerLine = Math.max(20, Math.floor(contentWidthPx / avgCharWidth));
 
-  // Default block spacing (top + bottom)
+  // Block spacing (top + bottom)
   const topSpacing = block.spacing?.top ?? 0;
   const bottomSpacing = block.spacing?.bottom ?? 0;
   const baseSpacing = topSpacing + bottomSpacing;
@@ -113,7 +162,7 @@ export function estimateBlockHeight(
         const colWidth = Math.max(40, contentWidthPx / Math.max(1, t.cols || 1));
         const cellChars = Math.max(8, Math.floor(colWidth / (fontSizePx * 0.5)));
         
-        for (const cell of t.data[r]) {
+        for (const cell of t.data[r] || []) {
           const cText = (cell || '').replace(/<[^>]*>/g, '');
           const lines = Math.max(1, Math.ceil(cText.length / cellChars));
           if (lines > maxLinesInRow) maxLinesInRow = lines;
@@ -162,7 +211,6 @@ export function estimateBlockHeight(
 
     case 'image': {
       const img = block as ImageBlock;
-      // Typical image block preview height
       return Math.round(240 + (img.caption ? 24 : 0) + baseSpacing);
     }
 
@@ -176,13 +224,27 @@ export function estimateBlockHeight(
 }
 
 /**
+ * Checks whether any non-break content block exists after the current index.
+ * Used to detect and discard trailing page breaks that would otherwise create empty trailing pages.
+ */
+function hasSubsequentContent(blocks: DocumentBlock[], startIndex: number): boolean {
+  for (let j = startIndex; j < blocks.length; j++) {
+    const b = blocks[j];
+    if (b && b.type !== 'pagebreak' && b.type !== 'sectionbreak') {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Automatically paginates document blocks into physical pages.
  * Respects:
- * - Page geometry and physical usable height
- * - Explicit page breaks (`pagebreak`)
+ * - Authoritative page geometry and physical usable height
+ * - Explicit page breaks (`pagebreak`) without empty leading, consecutive, or trailing pages
  * - Section breaks (`sectionbreak`) with independent running headers/footers and numbering restarts
- * - Prevents awkward orphaned headings (`keepWithNext`)
- * - Computes clean, predictable overflow boundaries
+ * - Prevents orphaned headings (`keepWithNext`)
+ * - Accurately detects and preserves oversized blocks without silent truncation
  */
 export function paginateDocument(
   docData: DocumentData,
@@ -191,16 +253,17 @@ export function paginateDocument(
   const pagesList: PaginatedPage[] = [];
   const blocks = docData.blocks || [];
 
-  // Usable height for page 1 might need adjustment if title banner is present
-  const baseAvailableHeight = geometry.usableBodyHeightPx;
   const hasCoverPage = Boolean(docData.settings.frontPage?.enabled);
   const showBannerOnPage1 = docData.settings.showTitleBanner && !hasCoverPage;
-  const titleBannerEstimatedHeight = 110; // Title + subtitle + status + meta bar
+  const titleBannerEstimatedHeight = showBannerOnPage1
+    ? calculateTitleBannerHeight(docData, geometry.contentPx.width)
+    : 0;
 
   let currentBlocks: DocumentBlock[] = [];
   let currentHeight = 0;
   let pageCounter = 1;
   let currentDisplayPage = 1;
+  let currentOversizedBlockIds: string[] = [];
 
   // Running settings state across sections
   let currentHeader = {
@@ -218,22 +281,36 @@ export function paginateDocument(
     footerText: docData.settings.footerText || '',
   };
 
-  const getPageCapacity = (pageIndex: number): number => {
+  // Dynamically compute the capacity of a given page based on its header/footer state and Page 1 banner
+  const getPageCapacity = (pageIndex: number, headerEnabled: boolean, footerEnabled: boolean): number => {
+    const hasFooterContainer = footerEnabled || (docData.settings.pageNumbering && docData.settings.pageNumbering !== 'none');
+    const headerFootprint = headerEnabled ? HEADER_LAYOUT.totalHeightPx : 0;
+    const footerFootprint = hasFooterContainer ? FOOTER_LAYOUT.totalHeightPx : 0;
+    
+    let capacity = geometry.contentPx.height - headerFootprint - footerFootprint;
+
     if (pageIndex === 1 && showBannerOnPage1) {
-      return Math.max(100, baseAvailableHeight - titleBannerEstimatedHeight);
+      capacity -= titleBannerEstimatedHeight;
     }
-    return baseAvailableHeight;
+
+    return Math.max(100, capacity);
   };
 
   const commitPage = () => {
-    const pageCapacity = getPageCapacity(pageCounter);
+    const pageCapacity = getPageCapacity(pageCounter, currentHeader.showHeader, currentFooter.showFooter);
+    const isOverflow = currentHeight > pageCapacity;
+    const overflowPx = isOverflow ? currentHeight - pageCapacity : 0;
+
     pagesList.push({
       pageNumber: pageCounter,
       blocks: [...currentBlocks],
       displayPageNumber: currentDisplayPage,
       estimatedHeightPx: currentHeight,
       maxContentHeightPx: pageCapacity,
-      isOverflowing: currentHeight > pageCapacity + 20,
+      isOverflowing: isOverflow,
+      hasOversizedBlock: currentOversizedBlockIds.length > 0,
+      oversizedBlockIds: [...currentOversizedBlockIds],
+      overflowAmountPx: overflowPx,
       headerSettings: { ...currentHeader },
       footerSettings: { ...currentFooter },
     });
@@ -242,18 +319,28 @@ export function paginateDocument(
     currentDisplayPage++;
     currentBlocks = [];
     currentHeight = 0;
+    currentOversizedBlockIds = [];
   };
 
   for (let i = 0; i < blocks.length; i++) {
     const block = blocks[i];
 
-    // Explicit Page Break
+    // 1. Explicit Page Break handling
     if (block.type === 'pagebreak') {
+      // Prevent unintended empty page from leading or consecutive page breaks
+      if (currentBlocks.length === 0) {
+        continue;
+      }
+      // Prevent unintended empty page from trailing page breaks (no content blocks follow)
+      if (!hasSubsequentContent(blocks, i + 1)) {
+        continue;
+      }
+      // Intentional page break: commit current content and advance
       commitPage();
       continue;
     }
 
-    // Section Break
+    // 2. Section Break handling
     if (block.type === 'sectionbreak') {
       // Commit the current page prior to section break if it has any blocks
       if (currentBlocks.length > 0) {
@@ -287,7 +374,7 @@ export function paginateDocument(
       continue;
     }
 
-    // Regular content block
+    // 3. Regular content block
     const blockHeight = estimateBlockHeight(
       block,
       geometry.contentPx.width,
@@ -295,10 +382,11 @@ export function paginateDocument(
       docData.settings.lineHeight
     );
 
-    const pageCapacity = getPageCapacity(pageCounter);
+    const pageCapacity = getPageCapacity(pageCounter, currentHeader.showHeader, currentFooter.showFooter);
+    const isBlockOversizedForEmptyPage = blockHeight > pageCapacity;
 
-    // Check if adding this block exceeds page capacity
-    // If block is a Heading and keepWithNext is enabled (or by default for H1/H2), check if next block also fits
+    // Heading orphan prevention: If block is a Heading and keepWithNext is enabled,
+    // verify that at least a portion of the subsequent content block fits on the page.
     const isHeading = block.type === 'heading';
     const keepWithNext = isHeading && (block as HeadingBlock).keepWithNext !== false;
     let requiredSpace = blockHeight;
@@ -312,13 +400,19 @@ export function paginateDocument(
           docData.settings.fontSize,
           docData.settings.lineHeight
         );
-        requiredSpace += Math.min(nextHeight, 60); // at least first few lines of next block
+        requiredSpace += Math.min(nextHeight, 60); // require at least first lines of next block
       }
     }
 
+    // If current page already has content and this block won't fit, start a new page
     if (currentBlocks.length > 0 && currentHeight + requiredSpace > pageCapacity) {
-      // Push to next page cleanly
       commitPage();
+    }
+
+    // Check if this single block exceeds an otherwise empty page
+    const newPageCapacity = getPageCapacity(pageCounter, currentHeader.showHeader, currentFooter.showFooter);
+    if (blockHeight > newPageCapacity) {
+      currentOversizedBlockIds.push(block.id);
     }
 
     currentBlocks.push(block);
@@ -331,4 +425,45 @@ export function paginateDocument(
   }
 
   return pagesList;
+}
+
+/**
+ * Summarizes overflow state across all paginated pages for UI badges, warnings, and export safeguards.
+ */
+export function getDocumentOverflowSummary(pages: PaginatedPage[]): DocumentOverflowSummary {
+  const overflowingPages: number[] = [];
+  let oversizedBlockCount = 0;
+  let maxOverflowPx = 0;
+
+  for (const page of pages) {
+    if (page.isOverflowing) {
+      overflowingPages.push(page.pageNumber);
+      if (page.overflowAmountPx > maxOverflowPx) {
+        maxOverflowPx = page.overflowAmountPx;
+      }
+    }
+    if (page.hasOversizedBlock) {
+      oversizedBlockCount += page.oversizedBlockIds.length;
+    }
+  }
+
+  const hasOverflow = overflowingPages.length > 0;
+  let message = 'All content fits within physical page boundaries.';
+  if (hasOverflow) {
+    const pageStr = overflowingPages.length === 1 ? `Page ${overflowingPages[0]}` : `Pages ${overflowingPages.join(', ')}`;
+    if (oversizedBlockCount > 0) {
+      message = `${pageStr} exceeds physical page capacity due to oversized content blocks. Full content is preserved without clipping; automatic block splitting is scheduled for Stage 2.`;
+    } else {
+      message = `${pageStr} exceeds printable page capacity (~${maxOverflowPx}px overflow). Review content layout.`;
+    }
+  }
+
+  return {
+    hasOverflow,
+    totalOverflowingPages: overflowingPages.length,
+    overflowingPages,
+    oversizedBlockCount,
+    maxOverflowPx,
+    message,
+  };
 }
