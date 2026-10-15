@@ -125,6 +125,14 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
             size: ${geometry.pageMm.width}mm ${geometry.pageMm.height}mm;
             margin: 0;
           }
+          #preview-page-cover,
+          [id^="preview-page-"] {
+            width: ${geometry.pageMm.width}mm !important;
+            height: ${geometry.pageMm.height}mm !important;
+            min-height: ${geometry.pageMm.height}mm !important;
+            max-height: ${geometry.pageMm.height}mm !important;
+            box-sizing: border-box !important;
+          }
         }
       `}</style>
 
